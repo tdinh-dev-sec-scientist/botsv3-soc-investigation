@@ -1,0 +1,46 @@
+# ============================================================
+# Direction B — Windows Endpoint
+# Leading question: which host has odd processes, odd accounts,
+# or signs of persistence?
+# ============================================================
+
+# B1 — rare processes (frequency analysis: the rare stuff is often the
+# suspicious stuff)
+index=botsv3 earliest=0 sourcetype=XmlWinEventLog source=*Sysmon* EventCode=1
+| rare limit=30 Image
+
+# B2 — suspicious command lines (encoded PowerShell, downloads, etc.)
+index=botsv3 earliest=0 sourcetype=XmlWinEventLog source=*Sysmon* EventCode=1
+  (CommandLine="*-enc*" OR CommandLine="*downloadstring*" OR CommandLine="*http*"
+   OR Image="*\\powershell.exe" OR Image="*\\cmd.exe")
+| table _time host User ParentImage Image CommandLine | sort _time
+
+# B3 — new accounts / added to admin group / new service / log cleared
+index=botsv3 earliest=0 sourcetype=WinEventLog EventCode IN (4720, 4732, 7045, 1102)
+| table _time host EventCode user Account_Name Group_Name Service_Name
+| sort _time
+
+# B4 — network connections made by processes (Sysmon EventCode 3)
+index=botsv3 earliest=0 sourcetype=XmlWinEventLog source=*Sysmon* EventCode=3
+| stats count by host Image DestinationIp DestinationPort | sort -count
+
+# --- Follow-up / pivot queries used during the investigation ---
+
+# Full PowerShell command-line + parent chain on the compromised host
+index=botsv3 earliest=0 host=FYODOR-L sourcetype=XmlWinEventLog source=*Sysmon*
+  EventCode=1 Image="*powershell.exe"
+| table _time ParentImage CommandLine | sort _time
+
+# How the backdoor account "svcvnc" was created and escalated
+index=botsv3 earliest=0 host=FYODOR-L sourcetype=XmlWinEventLog source=*Sysmon*
+  EventCode=1 CommandLine="*svcvnc*"
+| table _time ParentImage Image CommandLine User
+
+# Pivot the C2 IP across everything to check for lateral spread
+index=botsv3 earliest=0 "45.77.53.176" | stats count by sourcetype, host
+
+# Full raw event for a specific fodhelper.exe UAC-bypass instance
+# (used to extract + decode the base64 PowerShell payload)
+index=botsv3 earliest=0 host=FYODOR-L sourcetype=XmlWinEventLog source=*Sysmon*
+  EventCode=1 CommandLine="*fodhelper*"
+| table _time _raw

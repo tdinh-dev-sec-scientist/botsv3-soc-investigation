@@ -1,0 +1,27 @@
+# DET-04: New local account created and immediately elevated to
+#         Administrators
+#
+# Maps to: F2 (backdoor account "svcvnc" on FYODOR-L)
+# ATT&CK: T1136.001 (Create Account: Local Account), T1098 (Account
+#         Manipulation)
+#
+# Trigger condition: the same account name shows both EventCode 4720
+#   (account created) and 4732 (added to a group) within a short window
+#   (the query below requires both codes for the same account, with no
+#   time window — tighten with a `where (last_seen - first_seen) < 300`
+#   clause once a baseline of normal onboarding timing is known).
+# False positives: legitimate new-hire onboarding by IT/HR automation.
+#   Mitigate by filtering on the SID of the account performing the
+#   action (allowlist known admin/onboarding service accounts) or by
+#   requiring the event to fall outside an approved change window.
+# Test result: caught "svcvnc" on FYODOR-L (created and escalated to
+#   Administrators within 18 seconds); no other account in the dataset
+#   matched both event codes.
+
+index=botsv3 sourcetype=WinEventLog EventCode IN (4720, 4732)
+| stats values(EventCode) as codes min(_time) as first_seen max(_time) as last_seen
+        by host, Account_Name
+| where mvcount(codes) >= 2
+| eval window_sec = last_seen - first_seen
+| convert ctime(first_seen) ctime(last_seen)
+| table host Account_Name codes first_seen last_seen window_sec

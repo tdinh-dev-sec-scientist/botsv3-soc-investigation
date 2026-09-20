@@ -1,0 +1,20 @@
+# DET-05: High-volume PowerShell network beaconing to a single external IP
+#
+# Maps to: F2 (C2 beaconing from FYODOR-L and ABUNGST-L to 45.77.53.176)
+# ATT&CK: T1071.001 (Application Layer Protocol: Web Protocols)
+#
+# Trigger condition: any host with more than 100 PowerShell-initiated
+#   connections to one external IP/port pair within the search window.
+#   Threshold should be tuned against a per-environment baseline.
+# False positives: legitimate PowerShell-based remote management or
+#   monitoring tooling that polls a fixed external endpoint frequently.
+#   Mitigate with an allowlist of known management IPs/vendors.
+# Test result: ran against the full dataset; the only two hosts to cross
+#   the threshold were FYODOR-L (3,849 connections) and ABUNGST-L
+#   (1,070 connections), both to 45.77.53.176:443 — the confirmed C2
+#   server for Finding 2. No other host/IP pair came close.
+
+index=botsv3 sourcetype=XmlWinEventLog source=*Sysmon* EventCode=3
+  Image="*\\powershell.exe"
+| stats count by host DestinationIp DestinationPort
+| where count > 100

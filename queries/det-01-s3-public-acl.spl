@@ -1,0 +1,16 @@
+# DET-01: S3 bucket ACL changed to grant public access
+#
+# Maps to: F1 (bstoll PutBucketAcl on frothlywebcode)
+# ATT&CK: T1078 (Valid Accounts) / T1098 (Account Manipulation)
+#
+# Trigger condition: any single result is an alert.
+# False positives: a bucket intentionally made public (e.g. to host a
+#   static website). Mitigate with an allowlist of approved bucket names,
+#   or require change-ticket correlation before alerting.
+# Test result: ran against the full BOTSv3 dataset; returned exactly the
+#   2 PutBucketAcl events tied to Finding 1 (frothlywebcode, 2018-08-20),
+#   0 unrelated hits.
+
+index=botsv3 sourcetype=aws:cloudtrail eventName=PutBucketAcl
+  requestParameters.AccessControlPolicy.AccessControlList.Grant{}.Grantee.URI="*AllUsers*"
+| table _time userIdentity.userName requestParameters.bucketName sourceIPAddress

@@ -1,0 +1,44 @@
+# ============================================================
+# Direction A — Cloud / AWS
+# Leading question: who did what in AWS, and did any change weaken security?
+# ============================================================
+
+# A1 — overview: which user called which API
+index=botsv3 earliest=0 sourcetype=aws:cloudtrail
+| stats count by userIdentity.userName, eventName | sort -count
+
+# A2 — sensitive API calls (permission changes, bucket, IAM, logging)
+index=botsv3 earliest=0 sourcetype=aws:cloudtrail
+  eventName IN (PutBucketAcl, PutBucketPolicy, CreateUser, CreateAccessKey,
+                AttachUserPolicy, StopLogging, DeleteTrail, ConsoleLogin)
+| table _time userIdentity.userName sourceIPAddress eventName requestParameters.bucketName errorCode
+| sort _time
+
+# A3 — API activity without MFA
+index=botsv3 earliest=0 sourcetype=aws:cloudtrail
+| search userIdentity.sessionContext.attributes.mfaAuthenticated=false
+| stats count by userIdentity.userName, eventName
+
+# A4 — source IPs calling AWS, and what they called
+index=botsv3 earliest=0 sourcetype=aws:cloudtrail
+| stats count values(eventName) as apis by sourceIPAddress | sort -count
+
+# --- Follow-up / pivot queries used during the investigation ---
+
+# Confirm what the PutBucketAcl grant actually changed (public vs private)
+index=botsv3 earliest=0 sourcetype=aws:cloudtrail eventName=PutBucketAcl
+| table _time userIdentity.userName sourceIPAddress requestParameters
+# -> expand the event and inspect requestParameters.AccessControlList.Grant{}
+#    for a Grantee.URI containing "AllUsers" (would confirm the bucket was
+#    made public)
+
+# Pivot: everywhere the suspicious IP shows up, across all sourcetypes
+index=botsv3 earliest=0 "107.77.212.175" | stats count by sourcetype, host
+
+# Pivot: same IP inside the Cisco ASA firewall logs
+index=botsv3 earliest=0 "107.77.212.175" sourcetype=cisco:asa
+| table _time _raw | sort _time
+
+# Pivot: same IP inside Office 365 management activity
+index=botsv3 earliest=0 "107.77.212.175" sourcetype=ms:o365:management
+| table _time _raw | sort _time

@@ -1,0 +1,19 @@
+# DET-02: Encoded PowerShell launcher (PowerShell Empire-style stager)
+#
+# Maps to: F2 (base64 PowerShell launcher on FYODOR-L)
+# ATT&CK: T1027 (Obfuscated Files or Information), T1059.001 (PowerShell)
+#
+# Trigger condition: any hit, especially when CommandLine also contains
+#   the flag combination "-noP -sta -w 1" or "-NonI -W Hidden" (Empire's
+#   default launcher flags).
+# False positives: legitimate encoded PowerShell used by IT automation
+#   or deployment tooling (SCCM, Intune scripts). Mitigate with an
+#   allowlist of known-good script hashes or signer certificates.
+# Test result: ran against the full dataset; caught all 8 encoded-launcher
+#   events on FYODOR-L tied to Finding 2, 0 hits on any other host.
+
+index=botsv3 sourcetype=XmlWinEventLog source=*Sysmon* EventCode=1
+  Image="*\\powershell.exe"
+  CommandLine="*-enc*"
+| eval decoded=base64decode(CommandLine)
+| table _time host User ParentImage CommandLine decoded

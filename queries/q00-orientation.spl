@@ -1,0 +1,29 @@
+# ============================================================
+# Q0 — Orientation queries. Run these first to map the dataset
+# before hunting. All times below are as DISPLAYED by Splunk
+# during this investigation; see README "Data Quality Note" for
+# an important timezone correction that applies to every query
+# below and to every _time value that comes out of them.
+# ============================================================
+
+# Q0 — log sources and volume
+index=botsv3 earliest=0 | stats count by sourcetype | sort -count
+
+# Q0b — time range covered by the data
+index=botsv3 earliest=0 | stats earliest(_time) as first latest(_time) as last
+| convert ctime(first) ctime(last)
+
+# Q0c — hosts present, and how many distinct sourcetypes touch each
+index=botsv3 earliest=0 | stats count dc(sourcetype) as sources by host | sort -count
+
+# Q0d — event volume per day per sourcetype (top 10)
+index=botsv3 earliest=0 | timechart span=1d count by sourcetype limit=10
+
+# Q0e — confirm true UTC vs Splunk-displayed time (data quality check)
+# Compare the _time column against the TimeCreated SystemTime='...Z' value
+# inside the raw XML of any XmlWinEventLog event. In this investigation
+# they differed by exactly 4 hours (Splunk UI rendered America/New_York
+# local time, not UTC, despite the Preferences timezone being set to UTC).
+index=botsv3 earliest=0 sourcetype=XmlWinEventLog source=*Sysmon*
+| head 1
+| table _time _raw

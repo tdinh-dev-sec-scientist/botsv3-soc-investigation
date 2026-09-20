@@ -1,0 +1,18 @@
+# DET-03: fodhelper.exe UAC bypass technique
+#
+# Maps to: F2 (privilege escalation step on FYODOR-L)
+# ATT&CK: T1548.002 (Bypass User Account Control)
+#
+# Trigger condition: any single result. fodhelper.exe is a Windows
+#   "Features on Demand" helper with no legitimate interactive use case;
+#   it should never be spawned by powershell.exe.
+# False positives: effectively none observed — this parent/child pairing
+#   has no legitimate use case in a standard Windows environment.
+# Test result: caught both fodhelper.exe instances on FYODOR-L
+#   (privilege escalation at initial compromise, and a second bypass
+#   ~90 minutes later), 0 hits elsewhere in the dataset.
+
+index=botsv3 sourcetype=XmlWinEventLog source=*Sysmon* EventCode=1
+  Image="*\\fodhelper.exe"
+  ParentImage="*\\powershell.exe"
+| table _time host User ParentCommandLine
