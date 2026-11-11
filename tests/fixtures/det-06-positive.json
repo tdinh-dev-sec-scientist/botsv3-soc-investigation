@@ -1,0 +1,32 @@
+{
+  "fixture": "det-06-positive",
+  "expected": "fire",
+  "synthetic": true,
+  "events": [
+    {
+      "_time": "2018-08-20T10:01:41Z",
+      "index": "botsv3",
+      "sourcetype": "XmlWinEventLog",
+      "host": "FYODOR-L",
+      "EventCode": 1,
+      "User": "AzureAD\\FyodorMalteskesko",
+      "ProcessGuid": "{11111111-2222-3333-4444-555555555555}",
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "ParentImage": "C:\\Program Files\\WindowsApps\\browser_broker.exe",
+      "CommandLine": "powershell.exe -NoProfile -EncodedCommand SQBFAFgA"
+    },
+    {
+      "_time": "2018-08-20T10:02:15Z",
+      "index": "botsv3",
+      "sourcetype": "XmlWinEventLog",
+      "host": "FYODOR-L",
+      "EventCode": 3,
+      "User": "AzureAD\\FyodorMalteskesko",
+      "ProcessGuid": "{11111111-2222-3333-4444-555555555555}",
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "DestinationIp": "45.77.53.176",
+      "DestinationPort": 443,
+      "Protocol": "tcp"
+    }
+  ]
+}

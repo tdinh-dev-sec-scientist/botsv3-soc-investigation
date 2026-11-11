@@ -1,29 +1,28 @@
-# ============================================================
-# Q0 — Orientation queries. Run these first to map the dataset
-# before hunting. All times below are as DISPLAYED by Splunk
-# during this investigation; see README "Data Quality Note" for
-# an important timezone correction that applies to every query
-# below and to every _time value that comes out of them.
-# ============================================================
+# Q0 — Bounded BOTSv3 orientation.
+# Inventory period includes the 2018 incident and reported 2019 tail.
+# Keep this unfiltered to locate exact collector sourcetype/host pairs.
+index=botsv3 earliest=1534723200 latest=1577836800
+| stats count by sourcetype host
+| sort 0 -count
 
-# Q0 — log sources and volume
-index=botsv3 earliest=0 | stats count by sourcetype | sort -count
+# Q0b — Identify reported Unix add-on contamination by exact source type.
+index=botsv3 earliest=1534723200 latest=1577836800
+  sourcetype IN ("ps","top","lsof","netstat","PerfmonMk:Process")
+| stats count min(_time) as first_epoch max(_time) as last_epoch
+    by host sourcetype source
+| sort 0 host sourcetype source
 
-# Q0b — time range covered by the data
-index=botsv3 earliest=0 | stats earliest(_time) as first latest(_time) as last
-| convert ctime(first) ctime(last)
+# Q0c — Incident-day time range and host coverage.
+index=botsv3 earliest=1534723200 latest=1534809600
+  \`botsv3_exclude_unix_ta_noise\`
+| stats earliest(_time) as first_epoch latest(_time) as last_epoch
+    count dc(sourcetype) as source_types by host
+| sort 0 host
 
-# Q0c — hosts present, and how many distinct sourcetypes touch each
-index=botsv3 earliest=0 | stats count dc(sourcetype) as sources by host | sort -count
+# Q0d — Incident-day source-type volume.
+index=botsv3 earliest=1534723200 latest=1534809600
+  \`botsv3_exclude_unix_ta_noise\`
+| timechart span=1h count by sourcetype limit=10
 
-# Q0d — event volume per day per sourcetype (top 10)
-index=botsv3 earliest=0 | timechart span=1d count by sourcetype limit=10
-
-# Q0e — confirm true UTC vs Splunk-displayed time (data quality check)
-# Compare the _time column against the TimeCreated SystemTime='...Z' value
-# inside the raw XML of any XmlWinEventLog event. In this investigation
-# they differed by exactly 4 hours (Splunk UI rendered America/New_York
-# local time, not UTC, despite the Preferences timezone being set to UTC).
-index=botsv3 earliest=0 sourcetype=XmlWinEventLog source=*Sysmon*
-| head 1
-| table _time _raw
+# Q0e — Verify UTC against raw XML rather than adjusting display values.
+# Full comparison query is in queries/search-hygiene.spl.

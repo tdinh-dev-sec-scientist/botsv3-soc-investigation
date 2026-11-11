@@ -1,44 +1,52 @@
-# ============================================================
-# Direction A — Cloud / AWS
-# Leading question: who did what in AWS, and did any change weaken security?
-# ============================================================
+# Direction A — Cloud / AWS. Bounded to the BOTSv3 incident day.
 
-# A1 — overview: which user called which API
-index=botsv3 earliest=0 sourcetype=aws:cloudtrail
-| stats count by userIdentity.userName, eventName | sort -count
+# A1 — API activity overview.
+index=botsv3 sourcetype=aws:cloudtrail earliest=1534723200 latest=1534809600
+  \`botsv3_exclude_unix_ta_noise\`
+| stats count by userIdentity.userName eventName
+| sort 0 -count
 
-# A2 — sensitive API calls (permission changes, bucket, IAM, logging)
-index=botsv3 earliest=0 sourcetype=aws:cloudtrail
-  eventName IN (PutBucketAcl, PutBucketPolicy, CreateUser, CreateAccessKey,
-                AttachUserPolicy, StopLogging, DeleteTrail, ConsoleLogin)
-| table _time userIdentity.userName sourceIPAddress eventName requestParameters.bucketName errorCode
-| sort _time
+# A2 — Sensitive API actions with minimal projected fields.
+index=botsv3 sourcetype=aws:cloudtrail earliest=1534723200 latest=1534809600
+  eventName IN (PutBucketAcl,PutBucketPolicy,CreateUser,CreateAccessKey,
+                AttachUserPolicy,StopLogging,DeleteTrail,ConsoleLogin)
+  \`botsv3_exclude_unix_ta_noise\`
+| fields _time eventID userIdentity.userName sourceIPAddress eventName
+    requestParameters.bucketName errorCode
+| sort 0 _time
 
-# A3 — API activity without MFA
-index=botsv3 earliest=0 sourcetype=aws:cloudtrail
-| search userIdentity.sessionContext.attributes.mfaAuthenticated=false
-| stats count by userIdentity.userName, eventName
+# A3 — CloudTrail records with MFA reported false.
+index=botsv3 sourcetype=aws:cloudtrail earliest=1534723200 latest=1534809600
+  userIdentity.sessionContext.attributes.mfaAuthenticated=false
+  \`botsv3_exclude_unix_ta_noise\`
+| stats count values(eventName) as apis by userIdentity.userName
 
-# A4 — source IPs calling AWS, and what they called
-index=botsv3 earliest=0 sourcetype=aws:cloudtrail
-| stats count values(eventName) as apis by sourceIPAddress | sort -count
+# A4 — Source IPs and API names.
+index=botsv3 sourcetype=aws:cloudtrail earliest=1534723200 latest=1534809600
+  \`botsv3_exclude_unix_ta_noise\`
+| stats count values(eventName) as apis by sourceIPAddress
+| sort 0 -count
 
-# --- Follow-up / pivot queries used during the investigation ---
+# Inspect exact ACL/policy fields before claiming public exposure.
+index=botsv3 sourcetype=aws:cloudtrail earliest=1534723200 latest=1534809600
+  eventName IN (PutBucketAcl,PutBucketPolicy)
+  \`botsv3_exclude_unix_ta_noise\`
+| fields _time eventID userIdentity.arn sourceIPAddress eventName
+    requestParameters errorCode
+| sort 0 _time
 
-# Confirm what the PutBucketAcl grant actually changed (public vs private)
-index=botsv3 earliest=0 sourcetype=aws:cloudtrail eventName=PutBucketAcl
-| table _time userIdentity.userName sourceIPAddress requestParameters
-# -> expand the event and inspect requestParameters.AccessControlList.Grant{}
-#    for a Grantee.URI containing "AllUsers" (would confirm the bucket was
-#    made public)
+# Bounded cross-source IOC pivots establish co-occurrence only.
+index=botsv3 earliest=1534723200 latest=1534809600 "107.77.212.175"
+  \`botsv3_exclude_unix_ta_noise\`
+| stats count by sourcetype host
+| sort 0 -count
 
-# Pivot: everywhere the suspicious IP shows up, across all sourcetypes
-index=botsv3 earliest=0 "107.77.212.175" | stats count by sourcetype, host
+index=botsv3 sourcetype=cisco:asa earliest=1534723200 latest=1534809600
+  "107.77.212.175"
+| fields _time host _raw
+| sort 0 _time
 
-# Pivot: same IP inside the Cisco ASA firewall logs
-index=botsv3 earliest=0 "107.77.212.175" sourcetype=cisco:asa
-| table _time _raw | sort _time
-
-# Pivot: same IP inside Office 365 management activity
-index=botsv3 earliest=0 "107.77.212.175" sourcetype=ms:o365:management
-| table _time _raw | sort _time
+index=botsv3 sourcetype=ms:o365:management earliest=1534723200 latest=1534809600
+  "107.77.212.175"
+| fields _time user src_ip action _raw
+| sort 0 _time

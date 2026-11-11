@@ -1,0 +1,28 @@
+{
+  "fixture": "det-01-positive",
+  "expected": "fire",
+  "synthetic": true,
+  "events": [
+    {
+      "_time": "2018-08-20T13:01:46Z",
+      "index": "botsv3",
+      "sourcetype": "aws:cloudtrail",
+      "eventID": "evt-s3-public-001",
+      "eventName": "PutBucketAcl",
+      "errorCode": null,
+      "userIdentity": {
+        "userName": "bstoll",
+        "arn": "arn:aws:iam::111122223333:user/bstoll"
+      },
+      "sourceIPAddress": "107.77.212.175",
+      "bucket": "frothlywebcode",
+      "acl_grantee_uri": [
+        "http://acs.amazonaws.com/groups/global/AllUsers"
+      ],
+      "policy_public_principal": 0
+    }
+  ],
+  "lookup": {
+    "approved_public_buckets": []
+  }
+}
