@@ -1,0 +1,33 @@
+{
+  "fixture": "det-06-negative",
+  "expected": "no-fire",
+  "synthetic": true,
+  "scenario": "sanctioned IT admin encoded script with private management endpoint",
+  "events": [
+    {
+      "_time": "2018-08-20T10:01:41Z",
+      "index": "botsv3",
+      "sourcetype": "XmlWinEventLog",
+      "host": "IT-MGMT-04",
+      "EventCode": 1,
+      "User": "CONTOSO\\it-admin",
+      "ProcessGuid": "{66666666-7777-8888-9999-000000000004}",
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "ParentImage": "C:\\Windows\\System32\\services.exe",
+      "CommandLine": "powershell.exe -NoProfile -EncodedCommand SQBFAFgA"
+    },
+    {
+      "_time": "2018-08-20T10:02:15Z",
+      "index": "botsv3",
+      "sourcetype": "XmlWinEventLog",
+      "host": "IT-MGMT-04",
+      "EventCode": 3,
+      "User": "CONTOSO\\it-admin",
+      "ProcessGuid": "{66666666-7777-8888-9999-000000000004}",
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "DestinationIp": "10.10.22.15",
+      "DestinationPort": 5985,
+      "Protocol": "tcp"
+    }
+  ]
+}

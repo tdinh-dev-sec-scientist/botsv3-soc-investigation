@@ -1,0 +1,31 @@
+{
+  "fixture": "det-04-negative",
+  "expected": "no-fire",
+  "synthetic": true,
+  "events": [
+    {
+      "_time": "2018-08-20T10:08:17Z",
+      "index": "botsv3",
+      "sourcetype": "WinEventLog",
+      "host": "IT-WORKSTATION-04",
+      "EventCode": 4720,
+      "SubjectUserName": "it-provisioning-svc",
+      "TargetSid": "S-1-5-21-123456789-234567890-345678901-2204",
+      "TargetUserName": "contractor-helpdesk",
+      "GroupSid": null,
+      "GroupName": null
+    },
+    {
+      "_time": "2018-08-20T10:08:35Z",
+      "index": "botsv3",
+      "sourcetype": "WinEventLog",
+      "host": "IT-WORKSTATION-04",
+      "EventCode": 4732,
+      "SubjectUserName": "it-provisioning-svc",
+      "MemberSid": "S-1-5-21-123456789-234567890-345678901-2204",
+      "MemberName": "contractor-helpdesk",
+      "GroupSid": "S-1-5-32-555",
+      "GroupName": "Remote Desktop Users"
+    }
+  ]
+}

@@ -1,27 +1,45 @@
-# DET-04: New local account created and immediately elevated to
-#         Administrators
-#
-# Maps to: F2 (backdoor account "svcvnc" on FYODOR-L)
-# ATT&CK: T1136.001 (Create Account: Local Account), T1098 (Account
-#         Manipulation)
-#
-# Trigger condition: the same account name shows both EventCode 4720
-#   (account created) and 4732 (added to a group) within a short window
-#   (the query below requires both codes for the same account, with no
-#   time window — tighten with a `where (last_seen - first_seen) < 300`
-#   clause once a baseline of normal onboarding timing is known).
-# False positives: legitimate new-hire onboarding by IT/HR automation.
-#   Mitigate by filtering on the SID of the account performing the
-#   action (allowlist known admin/onboarding service accounts) or by
-#   requiring the event to fall outside an approved change window.
-# Test result: caught "svcvnc" on FYODOR-L (created and escalated to
-#   Administrators within 18 seconds); no other account in the dataset
-#   matched both event codes.
+# DET-04: Local account created then added to Administrators
+# ID: BOTSV3-WIN-LOCAL-ADMIN-002
+# Schedule: */5 * * * *; ES time range basis=Index Time
+# Range: earliest=-15m latest=-5m; 5-minute late-data grace
+# Dedup: host + target_sid + create_time; throttle 60m
+# Primary risk: target user, type user, score 50
+# Secondary risk: dest host, type system, score 40
+# Correlate target SID, not generic Account_Name or actor name.
+# Require Administrators SID/name and event interval <= 300 seconds.
 
-index=botsv3 sourcetype=WinEventLog EventCode IN (4720, 4732)
-| stats values(EventCode) as codes min(_time) as first_seen max(_time) as last_seen
-        by host, Account_Name
-| where mvcount(codes) >= 2
-| eval window_sec = last_seen - first_seen
-| convert ctime(first_seen) ctime(last_seen)
-| table host Account_Name codes first_seen last_seen window_sec
+index=botsv3 sourcetype=WinEventLog earliest=-15m latest=-5m
+  EventCode IN (4720,4732)
+  \`botsv3_exclude_unix_ta_noise\`
+| fields _time host EventCode SubjectUserName SubjectUser_Name SubjectSid
+    TargetSid Target_Sid TargetUserName Target_User_Name MemberSid Member_Sid
+    MemberName Member_Name GroupSid Group_SID GroupName Group_Name
+| eval event_code=tonumber(EventCode)
+| eval actor=coalesce(SubjectUserName,SubjectUser_Name)
+| eval target_sid=case(event_code=4720,coalesce(TargetSid,Target_Sid),
+                       event_code=4732,coalesce(MemberSid,Member_Sid))
+| eval target_user=case(event_code=4720,coalesce(TargetUserName,Target_User_Name),
+                        event_code=4732,coalesce(MemberName,Member_Name))
+| eval group_sid=coalesce(GroupSid,Group_SID)
+| eval group_name=coalesce(GroupName,Group_Name)
+| eval is_create=if(event_code=4720 AND isnotnull(target_sid),1,0)
+| eval is_admin_add=if(event_code=4732 AND isnotnull(target_sid)
+    AND (group_sid="S-1-5-32-544" OR lower(group_name)="administrators"),1,0)
+| where is_create=1 OR is_admin_add=1
+| stats max(is_create) as account_created max(is_admin_add) as admin_added
+    min(eval(if(is_create=1,_time,null()))) as create_time
+    min(eval(if(is_admin_add=1,_time,null()))) as admin_add_time
+    values(eval(if(is_create=1,actor,null()))) as creator
+    values(eval(if(is_admin_add=1,actor,null()))) as group_modifier
+    values(target_user) as target_user values(group_name) as group_name
+    values(group_sid) as group_sid by host target_sid
+| eval window_sec=admin_add_time-create_time
+| where account_created=1 AND admin_added=1
+    AND window_sec>=0 AND window_sec<=300
+| eval dest=host, user=mvindex(target_user,0), user_id=target_sid
+| eval dedup_key=host."|".target_sid."|".tostring(create_time)
+| eval risk_object=user, risk_object_type="user", risk_score=50
+| eval risk_message="Account created and added to local Administrators on ".host
+| fields create_time admin_add_time window_sec host dest target_sid user user_id dedup_key
+    creator group_modifier group_name group_sid risk_object risk_object_type
+    risk_score risk_message

@@ -1,16 +1,31 @@
-# DET-01: S3 bucket ACL changed to grant public access
-#
-# Maps to: F1 (bstoll PutBucketAcl on frothlywebcode)
-# ATT&CK: T1078 (Valid Accounts) / T1098 (Account Manipulation)
-#
-# Trigger condition: any single result is an alert.
-# False positives: a bucket intentionally made public (e.g. to host a
-#   static website). Mitigate with an allowlist of approved bucket names,
-#   or require change-ticket correlation before alerting.
-# Test result: ran against the full BOTSv3 dataset; returned exactly the
-#   2 PutBucketAcl events tied to Finding 1 (frothlywebcode, 2018-08-20),
-#   0 unrelated hits.
+# DET-01: Public S3 ACL or policy grant
+# ID: BOTSV3-CLOUD-S3-PUBLIC-ACL-001
+# Schedule: */5 * * * *; ES time range basis=Index Time
+# Range: earliest=-15m latest=-5m; 5-minute late-data grace
+# Dedup: eventID; throttle 60m by eventID
+# Primary risk: bucket as system, score 60; secondary user as user, score 40
+# Required normalized fields: bucket, acl_grantee_uri, policy_public_principal
+# Required lookup: approved_public_buckets(bucket, owner, approval_ref, expires)
 
-index=botsv3 sourcetype=aws:cloudtrail eventName=PutBucketAcl
-  requestParameters.AccessControlPolicy.AccessControlList.Grant{}.Grantee.URI="*AllUsers*"
-| table _time userIdentity.userName requestParameters.bucketName sourceIPAddress
+index=botsv3 sourcetype=aws:cloudtrail earliest=-15m latest=-5m
+  eventName IN (PutBucketAcl,PutBucketPolicy)
+  \`botsv3_exclude_unix_ta_noise\`
+| fields _time eventID eventName errorCode userIdentity.userName userIdentity.arn
+    sourceIPAddress bucket requestParameters.bucketName acl_grantee_uri
+    policy_public_principal
+| where isnull(errorCode) OR errorCode=""
+| eval bucket=coalesce(bucket,'requestParameters.bucketName')
+| eval acl_public=if(mvfind(acl_grantee_uri,
+    "(?i)/(AllUsers|AuthenticatedUsers)$")>=0,1,0)
+| eval policy_public=if(tonumber(policy_public_principal)=1,1,0)
+| where acl_public=1 OR policy_public=1
+| lookup approved_public_buckets bucket OUTPUT bucket AS approved_bucket
+| where isnull(approved_bucket)
+| eval user=coalesce('userIdentity.userName','userIdentity.arn')
+| eval src=sourceIPAddress, dest=bucket, action="allowed"
+| eval dedup_key=coalesce(eventID,coalesce(bucket,"unknown")."|".coalesce(user,"unknown")."|".eventName."|".tostring(_time))
+| eval risk_object=bucket, risk_object_type="system", risk_score=60
+| eval risk_message="Unexpected public S3 grant on ".bucket
+| fields _time eventID eventName user src dest acl_grantee_uri
+    policy_public_principal action dedup_key risk_object risk_object_type risk_score
+    risk_message errorCode

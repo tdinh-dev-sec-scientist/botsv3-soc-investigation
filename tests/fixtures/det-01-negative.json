@@ -1,0 +1,26 @@
+{
+  "fixture": "det-01-negative",
+  "expected": "no-fire",
+  "synthetic": true,
+  "events": [
+    {
+      "_time": "2018-08-20T13:01:46Z",
+      "index": "botsv3",
+      "sourcetype": "aws:cloudtrail",
+      "eventID": "evt-s3-private-001",
+      "eventName": "PutBucketAcl",
+      "errorCode": null,
+      "userIdentity": {
+        "userName": "deploy-service",
+        "arn": "arn:aws:iam::111122223333:user/deploy-service"
+      },
+      "sourceIPAddress": "10.10.5.12",
+      "bucket": "private-app-data",
+      "acl_grantee_uri": [],
+      "policy_public_principal": 0
+    }
+  ],
+  "lookup": {
+    "approved_public_buckets": []
+  }
+}

@@ -1,0 +1,51 @@
+# DET-06: Suspicious PowerShell process followed by non-RFC1918 egress
+# ID: BOTSV3-WIN-PS-EGRESS-003
+# Schedule: */5 * * * *; ES time range basis=Index Time
+# Range: earliest=-20m latest=-5m; 5-minute late-data grace
+# Dedup: host + ProcessGuid; throttle 60m
+# Primary risk: user, type user, score 30
+# Secondary risk: dest host, type system, score 40
+# Require Event 1 then Event 3 on same ProcessGuid within 600 seconds.
+# Add enterprise internal CIDRs to RFC1918 exclusions before rollout.
+
+index=botsv3 sourcetype=XmlWinEventLog EventCode IN (1,3)
+  earliest=-20m latest=-5m
+  \`botsv3_exclude_unix_ta_noise\`
+| fields _time host User EventCode ProcessGuid Image ParentImage CommandLine
+    SourceIp DestinationIp DestinationPort Protocol
+| eval event_code=tonumber(EventCode), process_guid=ProcessGuid
+| where isnotnull(process_guid) AND process_guid!="" AND process_guid!="-"
+| eval is_suspicious_ps=if(event_code=1
+    AND match(Image,"(?i)\\\\(powershell(?:_ise)?|pwsh)\\.exe$")
+    AND match(CommandLine,
+      "(?i)(?:^|\\s)-(?:enc|encodedcommand)(?:\\s|:)|downloadstring|frombase64string|(?:^|[;&|]\\s*)iex(?:\\s|\\(|$)"),1,0)
+| eval is_rfc1918=if(event_code=3 AND isnotnull(DestinationIp)
+    AND (cidrmatch("10.0.0.0/8",DestinationIp)
+      OR cidrmatch("172.16.0.0/12",DestinationIp)
+      OR cidrmatch("192.168.0.0/16",DestinationIp)),1,0)
+| eval is_external=if(event_code=3 AND isnotnull(DestinationIp)
+    AND is_rfc1918=0,1,0)
+| where is_suspicious_ps=1 OR is_external=1
+| sort 0 host process_guid _time
+| streamstats last(eval(if(is_suspicious_ps=1,_time,null()))) as process_time
+    last(eval(if(is_suspicious_ps=1,User,null()))) as user
+    last(eval(if(is_suspicious_ps=1,Image,null()))) as process_path
+    last(eval(if(is_suspicious_ps=1,ParentImage,null()))) as parent_process_name
+    last(eval(if(is_suspicious_ps=1,CommandLine,null()))) as command_line
+    by host process_guid
+| where is_external=1 AND isnotnull(process_time)
+| eval seconds_to_egress=_time-process_time
+| where seconds_to_egress>=0 AND seconds_to_egress<=600
+| stats min(_time) as first_external_time
+    values(DestinationIp) as dest_ip values(DestinationPort) as dest_port
+    values(Protocol) as transport values(user) as user
+    values(process_path) as process_path values(parent_process_name) as parent_process_name
+    values(command_line) as command_line max(seconds_to_egress) as seconds_to_egress
+    by host process_guid process_time
+| eval process_name=replace(process_path,"^.*\\\\","")
+| eval dedup_key=host."|".process_guid
+| eval dest=host, risk_object=mvindex(user,0), risk_object_type="user", risk_score=30
+| eval risk_message="Suspicious PowerShell process made external connection on ".host
+| fields process_time first_external_time seconds_to_egress host dest user
+    process_guid dedup_key process_name process_path parent_process_name command_line
+    dest_ip dest_port transport risk_object risk_object_type risk_score risk_message

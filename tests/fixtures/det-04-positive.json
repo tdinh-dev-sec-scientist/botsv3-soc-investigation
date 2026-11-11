@@ -1,0 +1,31 @@
+{
+  "fixture": "det-04-positive",
+  "expected": "fire",
+  "synthetic": true,
+  "events": [
+    {
+      "_time": "2018-08-20T10:08:17Z",
+      "index": "botsv3",
+      "sourcetype": "WinEventLog",
+      "host": "FYODOR-L",
+      "EventCode": 4720,
+      "SubjectUserName": "AzureAD\\FyodorMalteskesko",
+      "TargetSid": "S-1-5-21-123456789-234567890-345678901-1109",
+      "TargetUserName": "svcvnc",
+      "GroupSid": null,
+      "GroupName": null
+    },
+    {
+      "_time": "2018-08-20T10:08:35Z",
+      "index": "botsv3",
+      "sourcetype": "WinEventLog",
+      "host": "FYODOR-L",
+      "EventCode": 4732,
+      "SubjectUserName": "AzureAD\\FyodorMalteskesko",
+      "MemberSid": "S-1-5-21-123456789-234567890-345678901-1109",
+      "MemberName": "svcvnc",
+      "GroupSid": "S-1-5-32-544",
+      "GroupName": "Administrators"
+    }
+  ]
+}
